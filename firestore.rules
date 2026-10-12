@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function inFamily(familyId) {
+      return signedIn() && userDoc().familyId == familyId;
+    }
+
+    function isParentInFamily(familyId) {
+      return inFamily(familyId) && userDoc().role == 'parent';
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid
+        || (resource.data.familyId != null
+            && resource.data.familyId == userDoc().familyId));
+      allow create: if signedIn() && request.auth.uid == uid;
+      allow update: if signedIn() && request.auth.uid == uid;
+      allow delete: if false;
+    }
+
+    match /families/{familyId} {
+      allow read: if inFamily(familyId)
+        || (signedIn() && request.query.limit <= 1);
+      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid
+        && userDoc().role == 'parent';
+      allow update, delete: if isParentInFamily(familyId);
+
+      match /members/{uid} {
+        allow read: if inFamily(familyId);
+        allow create: if signedIn() && request.auth.uid == uid;
+        allow update, delete: if isParentInFamily(familyId);
+      }
+
+      match /messages/{messageId} {
+        allow read, create: if inFamily(familyId);
+        allow update, delete: if isParentInFamily(familyId);
+      }
+
+      match /tasks/{taskId} {
+        allow read: if inFamily(familyId);
+        allow create, delete: if isParentInFamily(familyId);
+        allow update: if isParentInFamily(familyId)
+          || (inFamily(familyId)
+              && request.auth.uid in resource.data.assigneeIds
+              && request.resource.data.diff(resource.data).affectedKeys()
+                  .hasOnly(['status']));
+      }
+
+      match /locations/{uid} {
+        allow read: if inFamily(familyId);
+        allow write: if inFamily(familyId) && request.auth.uid == uid;
+      }
+    }
+  }
+}
